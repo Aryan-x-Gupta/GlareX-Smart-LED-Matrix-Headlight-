@@ -1,0 +1,112 @@
+
+import cv2
+import serial
+from ultralytics import YOLO
+
+# Initialize YOLO11n model
+model = YOLO("yolo11n.pt")
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)
+
+# ESP32 serial communication
+esp32 = serial.Serial("COM12", 115200, timeout=1)
+
+# Vehicle classes in the COCO dataset
+VEHICLE_CLASSES = [2, 3, 5, 7]
+
+# Four LED zones
+NUM_ZONES = 4
+ZONE_BRIGHTNESS = [100, 100, 100, 100]
+
+# Detection confidence threshold
+CONFIDENCE = 0.50
+
+
+def map_vehicle_to_zone(x_center, frame_width):
+    """Map vehicle position to one of four LED zones."""
+    zone_width = frame_width / NUM_ZONES
+    zone = int(x_center / zone_width)
+
+    return min(zone, NUM_ZONES - 1)
+
+
+while cap.isOpened():
+
+    ret, frame = cap.read()
+
+    if not ret:
+        break
+
+    frame_height, frame_width = frame.shape[:2]
+
+    # Default brightness for all LED zones
+    brightness = [100, 100, 100, 100]
+
+    # Run YOLO vehicle detection
+    results = model.predict(
+        frame,
+        conf=CONFIDENCE,
+        verbose=False
+    )
+
+    for result in results:
+
+        for box in result.boxes:
+
+            class_id = int(box.cls[0])
+            confidence = float(box.conf[0])
+
+            # Process only vehicle classes
+            if class_id in VEHICLE_CLASSES:
+
+                x1, y1, x2, y2 = map(
+                    int, box.xyxy[0]
+                )
+
+                # Calculate vehicle center
+                x_center = (x1 + x2) / 2
+
+                # Identify corresponding LED zone
+                zone = map_vehicle_to_zone(
+                    x_center,
+                    frame_width
+                )
+
+                # Reduce brightness in detected zone
+                brightness[zone] = 20
+
+                # Draw bounding box
+                cv2.rectangle(
+                    frame,
+                    (x1, y1),
+                    (x2, y2),
+                    (0, 255, 0),
+                    2
+                )
+
+                cv2.putText(
+                    frame,
+                    f"Vehicle {confidence:.2f}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    2
+                )
+
+    # Send brightness values to ESP32
+    command = ",".join(map(str, brightness)) + "\n"
+    esp32.write(command.encode())
+
+    # Display processed frame
+    cv2.imshow("GlareX - YOLO Vehicle Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+
+# Release resources
+cap.release()
+esp32.close()
+cv2.destroyAllWindows()
